@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>📅 MD Schedule</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500;600&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'DM Mono', monospace; background: #F9FAFB; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #F3F4F6; }
+  ::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 3px; }
+
+  #toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 16px; background: #fff;
+    border-bottom: 1px solid #E5E7EB; flex-shrink: 0;
+  }
+  #toolbar .title { font-weight: 600; font-size: 14px; color: #111827; }
+  #toolbar .spacer { flex: 1; }
+  #toolbar .status { font-size: 11px; }
+  .status-ok { color: #10B981; }
+  .status-warn { color: #F59E0B; }
+  .status-err { color: #EF4444; }
+  .status-info { color: #6B7280; }
+
+  button {
+    padding: 5px 11px; font-size: 11px; font-family: 'DM Mono', monospace;
+    border-radius: 6px; cursor: pointer; border: 1px solid #E5E7EB;
+    background: #fff; color: #374151; font-weight: 500;
+    transition: background .15s;
+  }
+  button:hover { background: #F3F4F6; }
+  button.primary { background: #111827; color: #fff; border-color: #111827; }
+  button.primary:hover { background: #374151; }
+  button:disabled { opacity: 0.5; cursor: default; }
+
+
+  #task-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 16px; background: #fff;
+    border-bottom: 1px solid #E5E7EB; flex-shrink: 0;
+  }
+  #task-input {
+    flex: 1; font-family: 'DM Mono', monospace; font-size: 12px;
+    padding: 5px 10px; border: 1px solid #E5E7EB; border-radius: 6px;
+    outline: none; color: #111827;
+  }
+  #task-input:focus { border-color: #6366F1; }
+  #task-input::placeholder { color: #9CA3AF; }
+  #legend {
+    display: flex; gap: 16px; align-items: center;
+    padding: 7px 16px; border-bottom: 1px solid #E5E7EB; background: #FAFAFA;
+    flex-shrink: 0;
+  }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #6B7280; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+
+  #timeline-panel { display: flex; overflow: hidden; flex-shrink: 0; }
+  #time-axis { width: 44px; flex-shrink: 0; border-right: 1px solid #E5E7EB; background: #FAFAFA; padding-top: 69px; }
+  .hour-cell { display: flex; align-items: flex-start; padding: 3px 0 0 6px; font-size: 10px; color: #9CA3AF; }
+  #days-scroll { display: flex; overflow-x: auto; overflow-y: hidden; flex: 1; }
+
+  .day-col { width: 200px; flex-shrink: 0; border-right: 1px solid #E5E7EB; display: flex; flex-direction: column; }
+  .day-header { padding: 10px 12px 8px; border-bottom: 1px solid #E5E7EB; background: #FAFAFA; }
+  .day-title { font-weight: 600; font-size: 13px; color: #111827; margin-bottom: 6px; }
+  .day-stats { display: flex; gap: 5px; flex-wrap: wrap; }
+  .stat-badge { font-size: 10px; border-radius: 4px; padding: 1px 5px; border: 1px solid; }
+  .day-body { position: relative; overflow: hidden; background: #fff; }
+
+  .block {
+    position: absolute; left: 4px; right: 4px;
+    border-radius: 5px; padding: 2px 6px;
+    display: flex; align-items: flex-start; gap: 4px;
+    overflow: hidden; box-sizing: border-box; cursor: default;
+  }
+  .block-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; margin-top: 3px; }
+  .block-title { font-size: 9.5px; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; }
+
+  .todo-overlay {
+    position: absolute; bottom: 4px; left: 4px; right: 4px;
+    background: rgba(249,250,251,0.93); border: 1px dashed #D1D5DB;
+    border-radius: 5px; padding: 4px 6px;
+  }
+  .todo-title { font-size: 9px; color: #6B7280; margin-bottom: 2px; }
+  .todo-item { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  #divider {
+    height: 6px; background: #E5E7EB; cursor: row-resize; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #divider-handle { width: 32px; height: 2px; border-radius: 1px; background: #9CA3AF; }
+
+  #editor-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+  #editor-bar { padding: 6px 16px; background: #FAFAFA; border-bottom: 1px solid #E5E7EB; font-size: 10px; color: #9CA3AF; flex-shrink: 0; }
+  #editor {
+    flex: 1; resize: none; border: none; outline: none;
+    padding: 16px; font-family: 'DM Mono', monospace; font-size: 12.5px;
+    line-height: 1.7; color: #1F2937; background: #fff;
+    overflow-y: auto; tab-size: 2;
+  }
+
+  .jira-panel {
+    position: fixed; right: 0; top: 44px; bottom: 0; width: 300px;
+    background: #fff; border-left: 1px solid #E5E7EB;
+    display: none; flex-direction: column; z-index: 100;
+  }
+  .jira-panel.open { display: flex; }
+  .jira-header { padding: 10px 14px; border-bottom: 1px solid #E5E7EB; font-weight: 600; font-size: 12px; display: flex; justify-content: space-between; }
+  .jira-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .jira-ticket { padding: 8px 10px; border: 1px solid #E5E7EB; border-radius: 6px; margin-bottom: 6px; cursor: pointer; }
+  .jira-ticket:hover { background: #F9FAFB; }
+  .jira-key { font-size: 10px; color: #3B82F6; font-weight: 600; }
+  .jira-summary { font-size: 11px; color: #374151; margin-top: 2px; }
+  .jira-status { font-size: 10px; color: #6B7280; margin-top: 2px; }
+
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .spin { display: inline-block; animation: spin 1s linear infinite; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <span class="title">📅 MD Schedule</span>
+  <div class="spacer"></div>
+  <span id="status" class="status status-info">Verbinde mit Server…</span>
+  <button id="btn-reparse">↺ Reparse</button>
+  <button id="btn-outlook">📆 Outlook Sync</button>
+  <button id="btn-jira">🎫 Jira</button>
+  <button id="btn-enrich">✨ Enrich</button>
+  <button id="btn-save" class="primary">💾 Save</button>
+</div>
+
+<div id="task-bar">
+  <input id="task-input" type="text" placeholder='z.B. "Aufgabe xyz heute 30 Minuten" oder "abc 1h nächste Woche"' />
+  <button id="btn-task">＋ Aufgabe</button>
+</div>
+
+<div id="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#DBEAFE;border:1.5px solid #3B82F6"></div>Meetings</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#D1FAE5;border:1.5px solid #10B981"></div>Pause / Frei Luft</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#FEF3C7;border:1.5px solid #F59E0B"></div>Fokus Arbeit</div>
+</div>
+
+<div id="timeline-panel">
+  <div id="time-axis"></div>
+  <div id="days-scroll"></div>
+</div>
+
+<div id="divider"><div id="divider-handle"></div></div>
+
+<div id="editor-panel">
+  <div id="editor-bar">📄 schedule.md — automatische Aktualisierung nach Eingabe</div>
+  <textarea id="editor" spellcheck="false"></textarea>
+</div>
+
+<div class="jira-panel" id="jira-panel">
+  <div class="jira-header">
+    <span>🎫 Jira Tickets</span>
+    <button onclick="toggleJira()" style="border:none;background:none;cursor:pointer;font-size:14px">✕</button>
+  </div>
+  <div class="jira-list" id="jira-list"></div>
+</div>
+
+<script>
+// ── Config ─────────────────────────────────────────────────────────────────────
+const API = '';  // пустая строка = тот же хост (localhost:PORT)
+
+const COLORS = {
+  meeting: { bg: '#DBEAFE', border: '#3B82F6', text: '#1E40AF', dot: '#3B82F6' },
+  pause:   { bg: '#D1FAE5', border: '#10B981', text: '#065F46', dot: '#10B981' },
+  fokus:   { bg: '#FEF3C7', border: '#F59E0B', text: '#92400E', dot: '#F59E0B' },
+};
+
+const PX_PER_HOUR = 64;
+const DAY_START = 8 * 60;
+const DAY_END = 19 * 60;
+const TOTAL_H = DAY_END - DAY_START;
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let parsedData = null;
+let unsaved = false;
+let debounceTimer = null;
+let topHeightVh = 55;
+
+// ── Status helper ──────────────────────────────────────────────────────────────
+function setStatus(msg, type = 'info') {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status status-' + type;
+}
+
+// ── API calls ──────────────────────────────────────────────────────────────────
+async function loadSchedule(andParse = true) {
+  try {
+    const r = await fetch(API + '/api/schedule');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    document.getElementById('editor').value = data.content;
+    setStatus('✓ Geladen', 'ok');
+    if (andParse) triggerParse(data.content);
+    return data.content;
+  } catch (e) {
+    setStatus('⚠ Server nicht erreichbar — starte python server.py', 'err');
+  }
+}
+
+async function saveSchedule() {
+  const content = document.getElementById('editor').value;
+  try {
+    const r = await fetch(API + '/api/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    unsaved = false;
+    setStatus('✓ Gespeichert', 'ok');
+  } catch (e) {
+    setStatus('⚠ Speichern fehlgeschlagen: ' + e.message, 'err');
+  }
+}
+
+async function outlookSync() {
+  setStatus('⟳ Outlook sync…', 'info');
+  document.getElementById('btn-outlook').disabled = true;
+  try {
+    const r = await fetch(API + '/api/sync/outlook', { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Fehler');
+    document.getElementById('editor').value = data.content;
+    unsaved = false;
+    setStatus('✓ ' + data.summary, 'ok');
+    triggerParse(data.content);
+  } catch (e) {
+    setStatus('⚠ Outlook: ' + e.message, 'err');
+  } finally {
+    document.getElementById('btn-outlook').disabled = false;
+  }
+}
+
+async function loadJira() {
+  document.getElementById('jira-list').innerHTML = '<div style="padding:12px;color:#6B7280;font-size:12px">Lade…</div>';
+  try {
+    const r = await fetch(API + '/api/sync/jira');
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Fehler');
+    renderJiraTickets(data.tickets);
+  } catch (e) {
+    document.getElementById('jira-list').innerHTML = `<div style="padding:12px;color:#EF4444;font-size:11px">⚠ ${e.message}</div>`;
+  }
+}
+
+async function enrich() {
+  const content = document.getElementById('editor').value;
+  setStatus('✨ LLM bereichert…', 'info');
+  document.getElementById('btn-enrich').disabled = true;
+  try {
+    const r = await fetch(API + '/api/enrich', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule_content: content }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Fehler');
+    document.getElementById('editor').value = data.enriched;
+    unsaved = true;
+    setStatus('✓ Angereichert — prüfe und speichere', 'warn');
+    triggerParse(data.enriched);
+  } catch (e) {
+    setStatus('⚠ Enrich: ' + e.message, 'err');
+  } finally {
+    document.getElementById('btn-enrich').disabled = false;
+  }
+}
+
+// ── LLM Parse ──────────────────────────────────────────────────────────────────
+async function parseWithLLM(text) {
+  // Парсинг идёт через локальный сервер — браузер не обращается к Anthropic напрямую
+
+  // Парсинг идёт через локальный сервер — браузер не обращается к Anthropic напрямую
+  const r = await fetch(API + '/api/parse', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: text }),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ detail: 'HTTP ' + r.status }));
+    throw new Error(err.detail || 'HTTP ' + r.status);
+  }
+  const parsed = await r.json();
+  if (!parsed.days) throw new Error('Unexpected JSON shape');
+  return parsed;
+}
+
+function triggerParse(text) {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(async () => {
+    setStatus('⟳ Parse…', 'info');
+    try {
+      parsedData = await parseWithLLM(text);
+      renderTimeline();
+      setStatus(unsaved ? '● ungespeichert' : '✓ ok', unsaved ? 'warn' : 'ok');
+    } catch (e) {
+      setStatus('⚠ Parse: ' + e.message, 'err');
+    }
+  }, 1500);
+}
+
+// ── Timeline render ────────────────────────────────────────────────────────────
+function timeToMin(t) {
+  if (!t || !t.includes(':')) return 0;
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+}
+function formatH(min) {
+  const h = Math.floor(min / 60), m = min % 60;
+  return m > 0 ? `${h}h${m}m` : `${h}h`;
+}
+
+function renderTimeline() {
+  const scroll = document.getElementById('days-scroll');
+  scroll.innerHTML = '';
+  if (!parsedData?.days?.length) return;
+  parsedData.days.forEach(day => scroll.appendChild(buildDayCol(day)));
+}
+
+function buildDayCol(day) {
+  const col = document.createElement('div');
+  col.className = 'day-col';
+
+  // Stats
+  const stats = { meeting: 0, pause: 0, fokus: 0 };
+  (day.schedule || []).forEach(item => {
+    const dur = timeToMin(item.end) - timeToMin(item.start);
+    if (dur > 0) stats[item.category] = (stats[item.category] || 0) + dur;
+  });
+
+  const label = new Date(day.date + 'T12:00:00').toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+  const badgeColors = { meeting: ['#DBEAFE','#3B82F6','#1E40AF'], pause: ['#D1FAE5','#10B981','#065F46'], fokus: ['#FEF3C7','#F59E0B','#92400E'] };
+  const statBadges = Object.entries(stats).filter(([,m]) => m > 0).map(([cat, min]) => {
+    const [bg, br, tx] = badgeColors[cat];
+    return `<span class="stat-badge" style="background:${bg};border-color:${br};color:${tx}">${cat[0].toUpperCase()}:${formatH(min)}</span>`;
+  }).join('');
+
+  const header = document.createElement('div');
+  header.className = 'day-header';
+  header.innerHTML = `<div class="day-title">${label}</div><div class="day-stats">${statBadges}</div>`;
+  col.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'day-body';
+  body.style.height = ((TOTAL_H / 60) * PX_PER_HOUR) + 'px';
+
+  (day.schedule || []).forEach(item => {
+    const startMin = timeToMin(item.start);
+    const endMin = timeToMin(item.end);
+    if (startMin >= DAY_END || endMin <= DAY_START || endMin <= startMin) return;
+    const cs = Math.max(startMin, DAY_START);
+    const ce = Math.min(endMin, DAY_END);
+    const top = ((cs - DAY_START) / 60) * PX_PER_HOUR;
+    const height = Math.max(((ce - cs) / 60) * PX_PER_HOUR - 2, 14);
+    const c = COLORS[item.category] || COLORS.fokus;
+
+    const block = document.createElement('div');
+    block.className = 'block';
+    const conflictStyle = item.conflict ? 'border-left:3px solid #EF4444;' : '';
+    block.title = item.conflict
+      ? `⚠ KONFLIKT: ${item.title} (${item.start}–${item.end})`
+      : `${item.title} (${item.start}–${item.end})`;
+    block.style.cssText = `top:${top+1}px;height:${height}px;background:${c.bg};border:1px solid ${c.border};${conflictStyle}`;
+    const conflictIcon = item.conflict ? '<span style="color:#EF4444;font-size:9px">⚠ </span>' : '';
+    block.innerHTML = `<div class="block-dot" style="background:${c.dot}"></div><span class="block-title" style="color:${c.text};-webkit-line-clamp:${height>30?3:1}">${conflictIcon}${item.title}</span>`;
+    body.appendChild(block);
+  });
+
+  // Todo overlay
+  const todos = day.todo || [];
+  if (todos.length) {
+    const open = todos.filter(t => !t.done).length;
+    const overlay = document.createElement('div');
+    overlay.className = 'todo-overlay';
+    overlay.innerHTML = `<div class="todo-title">Todo (${open} offen)</div>` +
+      todos.slice(0, 3).map(t => `<div class="todo-item" style="color:${t.done?'#9CA3AF':'#374151'};text-decoration:${t.done?'line-through':'none'}">${t.done?'✓':'·'} ${t.text}</div>`).join('') +
+      (todos.length > 3 ? `<div style="font-size:9px;color:#9CA3AF">+${todos.length-3} mehr</div>` : '');
+    body.appendChild(overlay);
+  }
+
+  col.appendChild(body);
+  return col;
+}
+
+function buildTimeAxis() {
+  const axis = document.getElementById('time-axis');
+  for (let h = 8; h <= 19; h++) {
+    const cell = document.createElement('div');
+    cell.className = 'hour-cell';
+    cell.style.height = h < 19 ? PX_PER_HOUR + 'px' : '0';
+    cell.textContent = String(h).padStart(2,'0') + ':00';
+    axis.appendChild(cell);
+  }
+}
+
+// ── Jira panel ─────────────────────────────────────────────────────────────────
+function toggleJira() {
+  const panel = document.getElementById('jira-panel');
+  const isOpen = panel.classList.toggle('open');
+  if (isOpen) loadJira();
+}
+
+function renderJiraTickets(tickets) {
+  const list = document.getElementById('jira-list');
+  if (!tickets.length) { list.innerHTML = '<div style="padding:12px;color:#6B7280;font-size:12px">Keine Tickets gefunden</div>'; return; }
+  list.innerHTML = tickets.map(t => `
+    <div class="jira-ticket" onclick="insertTicketToTodo('${t.key}', '${t.summary.replace(/'/g,"\\'")}', '${t.status}')">
+      <div class="jira-key">${t.key}</div>
+      <div class="jira-summary">${t.summary}</div>
+      <div class="jira-status">${t.status} · ${t.priority}</div>
+    </div>`).join('');
+}
+
+function insertTicketToTodo(key, summary, status) {
+  const editor = document.getElementById('editor');
+  const line = `- [ ] [${key}] ${summary} (${status})`;
+  editor.value += '\n' + line;
+  unsaved = true;
+  setStatus('● ungespeichert', 'warn');
+  triggerParse(editor.value);
+}
+
+// ── Resize divider ─────────────────────────────────────────────────────────────
+function applyTopHeight() {
+  const toolbar = document.getElementById('toolbar').offsetHeight;
+  const legend = document.getElementById('legend').offsetHeight;
+  const divider = document.getElementById('divider').offsetHeight;
+  const total = window.innerHeight;
+  const timelineH = Math.round((topHeightVh / 100) * total) - toolbar - legend;
+  document.getElementById('timeline-panel').style.height = timelineH + 'px';
+}
+
+document.getElementById('divider').addEventListener('mousedown', e => {
+  e.preventDefault();
+  const onMove = ev => {
+    topHeightVh = Math.min(Math.max((ev.clientY / window.innerHeight) * 100, 25), 75);
+    applyTopHeight();
+  };
+  const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+});
+
+window.addEventListener('resize', applyTopHeight);
+
+// ── Editor events ──────────────────────────────────────────────────────────────
+document.getElementById('editor').addEventListener('input', e => {
+  unsaved = true;
+  setStatus('● ungespeichert', 'warn');
+  triggerParse(e.target.value);
+});
+
+// Ctrl+S / Cmd+S
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveSchedule(); }
+});
+
+// ── Buttons ────────────────────────────────────────────────────────────────────
+
+async function addTask() {
+  const input = document.getElementById('task-input');
+  const cmd = input.value.trim();
+  if (!cmd) return;
+  const btn = document.getElementById('btn-task');
+  btn.disabled = true;
+  setStatus('⟳ Aufgabe einfügen…', 'info');
+  try {
+    const current = document.getElementById('editor').value;
+    const r = await fetch(API + '/api/task', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: cmd, schedule: current }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Fehler');
+    document.getElementById('editor').value = data.content;
+    unsaved = false;
+    input.value = '';
+    setStatus('✓ Aufgabe eingefügt', 'ok');
+    triggerParse(data.content);
+  } catch (e) {
+    setStatus('⚠ ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('btn-task').onclick = addTask;
+document.getElementById('task-input').addEventListener('keydown', e => { if (e.key === 'Enter') addTask(); });
+document.getElementById('btn-save').onclick = saveSchedule;
+document.getElementById('btn-outlook').onclick = outlookSync;
+document.getElementById('btn-jira').onclick = toggleJira;
+document.getElementById('btn-enrich').onclick = enrich;
+document.getElementById('btn-reparse').onclick = () => triggerParse(document.getElementById('editor').value);
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+buildTimeAxis();
+applyTopHeight();
+
+async function startup() {
+  // 1. Читаем файл — без парсинга, просто показываем в редакторе
+  const initial = await loadSchedule(false);
+  // 2. Синхронизируем календарь
+  setStatus('⟳ Outlook sync…', 'info');
+  let finalContent = initial;
+  try {
+    const r = await fetch(API + '/api/sync/outlook', { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Fehler');
+    document.getElementById('editor').value = data.content;
+    unsaved = false;
+    setStatus('✓ ' + data.summary, 'ok');
+    finalContent = data.content;
+  } catch (e) {
+    setStatus('📄 Outlook nicht verfügbar: ' + e.message, 'warn');
+  }
+  // 3. Парсим ровно один раз — после синка (или из файла если синк упал)
+  clearTimeout(debounceTimer);
+  if (finalContent) triggerParse(finalContent);
+}
+
+startup();
+</script>
+</body>
+</html>
