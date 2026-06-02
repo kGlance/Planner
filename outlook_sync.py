@@ -141,12 +141,12 @@ def build_day_block(date_str: str, meetings: list[dict], existing: str | None = 
                 existing_todo_lines = [l for l in sections[i+1].strip().splitlines() if l.strip().startswith("-")]
 
     # Строим Meetings секцию — мержим Outlook + существующие вручную
-    outlook_meeting_titles = {m["title"] for m in meetings}
     merged_meetings = list(existing_meetings_lines)
     for m in meetings:
         line = f"- {m['time']} {m['title']}"
-        # Добавляем только если такого ещё нет
-        if not any(m["title"] in l for l in merged_meetings):
+        # Добавляем только если такой же (время + название) ещё нет
+        meeting_sig = f"{m['time']} {m['title']}"
+        if not any(meeting_sig in l for l in merged_meetings):
             merged_meetings.append(line)
     # Сортируем по времени
     def meeting_sort_key(line):
@@ -160,7 +160,9 @@ def build_day_block(date_str: str, meetings: list[dict], existing: str | None = 
     for m in meetings:
         title = m["title"] if m["title"].startswith("Meeting:") else f"Meeting: {m['title']}"
         line = f"- {title} {m['time']}-{m['end']}"
-        if not any(m["title"] in l for l in merged_schedule):
+        # Проверяем по уникальной сигнатуре (время + название)
+        schedule_sig = f"{m['time']}-{m['end']} {m['title']}"
+        if not any(m["title"] in l and m["time"] in l and m["end"] in l for l in merged_schedule):
             merged_schedule.append(line)
     # Сортируем по времени начала
     def schedule_sort_key(line):
