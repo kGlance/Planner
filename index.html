@@ -59,15 +59,25 @@
 
   #timeline-panel { display: flex; overflow: hidden; flex-shrink: 0; }
   #time-axis { width: 44px; flex-shrink: 0; border-right: 1px solid #E5E7EB; background: #FAFAFA; padding-top: 69px; overflow-y: hidden; }
-  .hour-cell { display: flex; align-items: flex-start; padding: 3px 0 0 6px; font-size: 10px; color: #9CA3AF; }
+  .hour-cell { display: flex; align-items: flex-start; padding: 0 0 0 6px; font-size: 10px; color: #9CA3AF; }
   #days-scroll { display: flex; overflow-x: auto; overflow-y: auto; flex: 1; min-height: 0; align-items: flex-start; }
 
   .day-col { width: 200px; flex-shrink: 0; border-right: 1px solid #E5E7EB; display: flex; flex-direction: column; }
-  .day-header { padding: 10px 12px 8px; border-bottom: 1px solid #E5E7EB; background: #FAFAFA; }
+  .day-header { padding: 10px 12px 8px; border-bottom: 1px solid #E5E7EB; background: #FAFAFA; position: sticky; top: 0; z-index: 10; }
   .day-title { font-weight: 600; font-size: 13px; color: #111827; margin-bottom: 6px; }
   .day-stats { display: flex; gap: 5px; flex-wrap: wrap; }
   .stat-badge { font-size: 10px; border-radius: 4px; padding: 1px 5px; border: 1px solid; }
-  .day-body { position: relative; overflow: hidden; background: #fff; }
+  .day-body {
+    position: relative; overflow: hidden; background: #fff;
+    padding-bottom: 70px;
+    background-image: repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 63px,
+      #EEEEEE 63px,
+      #EEEEEE 64px
+    );
+  }
 
   .block {
     position: absolute; left: 4px; right: 4px;
@@ -122,7 +132,7 @@
 <body>
 
 <div id="toolbar">
-  <span class="title">📅 MD Schedule</span>
+  <span class="title">📅 My Schedule</span>
   <div class="spacer"></div>
   <span id="status" class="status status-info">Verbinde mit Server…</span>
   <button id="btn-reparse">↺ Reparse</button>
@@ -299,9 +309,10 @@ async function planAndParse(text) {
   setStatus('⟳ Plan…', 'info');
   let planned = text;
   try {
+    const today = new Date().toISOString().split('T')[0];
     const r = await fetch(API + '/api/plan', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ content: text })
+      body: JSON.stringify({ content: text, today: today })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
@@ -415,7 +426,7 @@ function buildDayCol(day) {
 
 function buildTimeAxis() {
   const axis = document.getElementById('time-axis');
-  for (let h = 8; h <= 19; h++) {
+  for (let h = 9; h <= 18; h++) {
     const cell = document.createElement('div');
     cell.className = 'hour-cell';
     cell.style.height = h < 19 ? PX_PER_HOUR + 'px' : '0';

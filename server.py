@@ -91,25 +91,116 @@ def write_cache(body: CacheBody):
     return {"ok": True}
 
 
+# ── Утилиты для работы с датами и окном ──────────────────────────────────────
+
+import re as _re_dates
+from datetime import datetime, timedelta
+
+def extract_dates_from_schedule(text: str) -> list:
+    """Извлекает все даты (YYYY-MM-DD) из schedule.md в порядке появления."""
+    dates = []
+    for line in text.split('\n'):
+        match = _re_dates.match(r'^#\s+(\d{4}-\d{2}-\d{2})', line)
+        if match:
+            dates.append(match.group(1))
+    return dates
+
+def get_schedule_window(full_text: str, today: str, days_ahead: int = 14) -> tuple:
+    """
+    Выбирает окно (сегодня до +14 дней) из schedule.md.
+    Возвращает: (window_text, before_text, after_text)
+    - window_text: дни в окне
+    - before_text: дни ДО сегодня
+    - after_text: дни ПОСЛЕ окна
+    """
+    dates = extract_dates_from_schedule(full_text)
+    if not dates:
+        return full_text, "", ""
+
+    try:
+        today_dt = datetime.strptime(today, "%Y-%m-%d").date()
+        end_dt = today_dt + timedelta(days=days_ahead)
+    except ValueError:
+        return full_text, "", ""
+
+    # Разбиваем по дням (отделитель ---)
+    day_blocks = _re_dates.split(r'\n---\n', full_text)
+
+    before, window, after = [], [], []
+    for block in day_blocks:
+        # Ищем дату в начале блока
+        match = _re_dates.match(r'^#\s+(\d{4}-\d{2}-\d{2})', block)
+        if not match:
+            before.append(block)  # Без даты в начало
+            continue
+
+        try:
+            block_date = datetime.strptime(match.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            before.append(block)
+            continue
+
+        if block_date < today_dt:
+            before.append(block)
+        elif block_date <= end_dt:
+            window.append(block)
+        else:
+            after.append(block)
+
+    before_text = '\n---\n'.join(before).strip()
+    window_text = '\n---\n'.join(window).strip()
+    after_text = '\n---\n'.join(after).strip()
+
+    return window_text, before_text, after_text
+
+def merge_schedule_window(before: str, planned_window: str, after: str) -> str:
+    """Собирает обратно полный файл из частей."""
+    parts = []
+    if before.strip():
+        parts.append(before.strip())
+    if planned_window.strip():
+        parts.append(planned_window.strip())
+    if after.strip():
+        parts.append(after.strip())
+    return '\n\n---\n\n'.join(parts) + '\n'
+
+
 # ── Шаг 1: планирование — LLM переписывает schedule.md ────────────────────────
 
 class ParseBody(BaseModel):
     content: str
+    today: str = None  # YYYY-MM-DD, опционально
 
 @app.post("/api/plan")
 def plan_schedule(body: ParseBody):
     from openai import OpenAI
     import time
+    from datetime import datetime
 
     api_key = os.getenv("ABACUS_API_KEY")
     if not api_key:
         raise HTTPException(500, "ABACUS_API_KEY не задан в .env")
 
-    system_prompt = """You are a work-day schedule planner. Your job is to take a schedule.md file and return the COMPLETE updated schedule.md with all duration-only tasks placed into concrete time slots.
+    # Определяем сегодня
+    today = body.today or datetime.now().strftime("%Y-%m-%d")
+
+    # Выбираем окно (сегодня + 14 дней)
+    window_text, before_text, after_text = get_schedule_window(body.content, today, days_ahead=14)
+
+    if not window_text.strip():
+        print(f"[Plan] ⚠ пустое окно для даты {today}")
+        return {"ok": True, "content": body.content}
+
+    print(f"[Plan] → окно от {today}, {len(window_text)} символов, всего {len(body.content)} в файле")
+
+    system_prompt = f"""You are a work-day schedule planner. Today is {today}.
+Your job is to take a schedule window (YYYY-MM-DD ... YYYY-MM-DD) and return it UPDATED with all duration-only tasks placed into concrete time slots.
+Plan ONLY for days from {today} onward within the given window. Do NOT modify or remove days before {today}.
 
 ## Output format
-Return ONLY the raw updated schedule.md content — no markdown fences, no explanation, no JSON.
+Return ONLY the raw updated schedule window — no markdown fences, no explanation, no JSON.
 Preserve all existing structure exactly: day separators (---), section headers (## Meetings, ## Schedule, ## Todo), meeting lines, todo items, done markers.
+Return EXACTLY the same window structure (same day count, same separators).
 
 ## Duration syntax — convert to fixed times
 Items in ## Schedule may specify duration instead of a time range. Recognize these patterns (case-insensitive, German/English):
@@ -121,24 +212,22 @@ Convert each duration-only item to "Item HH:MM-HH:MM" format. Items that already
 ## Scheduling rules (applied independently for EVERY day)
 1. First, lay out all fixed-time items (HH:MM-HH:MM or explicit start time).
 2. Fixed daily rule: if no Pause/Mittagspause is listed for a day, automatically insert "- Mittagspause 12:00-12:30" into ## Schedule.
-3. For duration-only tasks: schedule sequentially into free gaps starting from 09:00, skipping meetings and fixed items. Never overlap. Never schedule past 17:30. Skip Saturday and Sunday entirely.
+3. For duration-only tasks: schedule sequentially into free gaps starting from 09:00, skipping meetings and fixed items. Never overlap. Never schedule past 17:30. Skip Saturday and Sunday entirely. Never reschedule meetings!
 3a. Daily capacity cap: total scheduled time per day (meetings + pauses + fokus) must not exceed 7.5 hours (450 minutes). If placing a task would exceed the cap, place only what fits; carry the remainder to the next working day.
 4. If a task is longer than the largest free gap, split it:
    - remaining = total duration
    - For each free gap: part = min(remaining, gap). Place "Task (1/N) HH:MM-HH:MM". remaining -= part. Stop when 0.
    - Sum of all parts MUST equal original duration exactly.
-5. If remaining > 0 after all gaps on current day: carry to next working day as a duration-only line at the top of ## Schedule. Continue until remaining == 0. If no future day exists, add to todo with "(Rest — nächste Woche einplanen)".
+5. If remaining > 0 after all gaps on current day: carry to next working day as a duration-only line at the top of ## Schedule. Continue until remaining == 0. If no future day in window, append remainder to todo with "(Rest — nächste Woche einplanen)".
 
-## Conflict resolution
-- Meetings (prefix "Meeting:") are immovable.
-- Pause items are immovable.
-- Fokus task overlapping meeting/pause: shift fokus to start after the blocking item. Keep shifting if needed. If it can't fit before 17:30, apply split/carry rules.
-- Two meetings overlapping: keep both, add a comment line "> ⚠ Konflikt" after the second one.
+## Category rules
+- "meeting": title starts with "Meeting:" OR matches an entry in ## Meetings section by title
+- "pause": title contains (case-insensitive): pause, mittagspause, kaffeepause, frei luft, freiluft, break, lunch, morgenroutine, kaffee
+- "fokus": everything else
 
-Return ONLY the complete updated schedule.md text."""
+Return ONLY the updated schedule window — preserve separators (---) exactly."""
 
     model = os.getenv("ABACUS_MODEL", "gpt-5")
-    print(f"[Plan] → {model} | {len(body.content)} символов")
     t0 = time.time()
 
     try:
@@ -151,20 +240,25 @@ Return ONLY the complete updated schedule.md text."""
             max_tokens=4000,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": body.content},
+                {"role": "user", "content": window_text},
             ],
         )
         elapsed = time.time() - t0
         raw = response.choices[0].message.content.strip()
         print(f"[Plan] ✓ ответ за {elapsed:.1f}с | {len(raw)} символов")
+
         # Убираем случайные ```markdown фенсы
         import re
         raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+
+        # Встраиваем окно обратно в полный файл
+        full_result = merge_schedule_window(before_text, raw, after_text)
+
         # Сохраняем файл
         SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        cleaned = clean_schedule(raw)
+        cleaned = clean_schedule(full_result)
         SCHEDULE_FILE.write_text(cleaned, encoding="utf-8")
-        print(f"[Plan] ✓ файл сохранён: {SCHEDULE_FILE}")
+        print(f"[Plan] ✓ файл сохранён (история сохранена): {SCHEDULE_FILE}")
         return {"ok": True, "content": cleaned}
     except Exception as e:
         print(f"[Plan] ✗ ошибка ({time.time()-t0:.1f}с): {e}")
@@ -198,7 +292,7 @@ Return ONLY a raw JSON object — no markdown fences, no explanation:
 
 ## Category rules
 - "meeting": title starts with "Meeting:" OR title matches an entry in ## Meetings
-- "pause": title contains (case-insensitive): pause, mittagspause, kaffeepause, frei luft, freiluft, break, lunch
+- "pause": title contains (case-insensitive): pause, mittagspause, kaffeepause, frei luft, freiluft, break, lunch, morgenroutine, kaffee
 - "fokus": everything else
 
 Return ONLY the raw JSON object."""
