@@ -132,8 +132,20 @@
   .jira-panel.open { display: flex; }
   .jira-header { padding: 10px 14px; border-bottom: 1px solid #E5E7EB; font-weight: 600; font-size: 12px; display: flex; justify-content: space-between; }
   .jira-list { flex: 1; overflow-y: auto; padding: 8px; }
-  .jira-ticket { padding: 8px 10px; border: 1px solid #E5E7EB; border-radius: 6px; margin-bottom: 6px; cursor: pointer; }
-  .jira-ticket:hover { background: #F9FAFB; }
+  .jira-ticket { padding: 8px 10px; border: 1px solid #E5E7EB; border-radius: 6px; margin-bottom: 6px; cursor: grab; user-select: none; transition: border-color .15s; }
+  .jira-ticket:hover { background: #F9FAFB; border-color: #6366F1; }
+  .jira-ticket.dragging { opacity: 0.4; cursor: grabbing; }
+  .day-body.drag-over { outline: 2px dashed #6366F1; outline-offset: -2px; background-color: rgba(238,242,255,0.3); }
+  .ghost-block {
+    position: absolute; left: 4px; right: 4px;
+    background: rgba(238,242,255,0.96); border: 1.5px dashed #6366F1;
+    border-radius: 5px; padding: 4px 6px; box-sizing: border-box; z-index: 50;
+  }
+  .ghost-resize-handle {
+    position: absolute; bottom: 0; left: 0; right: 0; height: 7px;
+    cursor: row-resize; background: rgba(99,102,241,0.25); border-radius: 0 0 4px 4px;
+  }
+  .ghost-resize-handle:hover { background: rgba(99,102,241,0.5); }
   .jira-key { font-size: 10px; color: #3B82F6; font-weight: 600; }
   .jira-summary { font-size: 11px; color: #374151; margin-top: 2px; }
   .jira-status { font-size: 10px; color: #6B7280; margin-top: 2px; }
@@ -206,6 +218,7 @@ let parsedData = null;
 let unsaved = false;
 let debounceTimer = null;
 let topHeightVh = 55;
+let draggingTicket = null;  // { key, summary } — текущий перетаскиваемый тикет
 
 // ── Status helper ──────────────────────────────────────────────────────────────
 function setStatus(msg, type = 'info') {
@@ -411,6 +424,29 @@ function buildDayCol(day) {
   const body = document.createElement('div');
   body.className = 'day-body';
   body.style.height = ((TOTAL_H / 60) * PX_PER_HOUR) + 'px';
+  body.dataset.date = day.date;
+
+  // ── Drop zone для Jira тикетов ──
+  body.addEventListener('dragover', e => {
+    if (!draggingTicket) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    body.classList.add('drag-over');
+  });
+  body.addEventListener('dragleave', e => {
+    // только если мышь ушла за пределы body
+    if (!body.contains(e.relatedTarget)) body.classList.remove('drag-over');
+  });
+  body.addEventListener('drop', e => {
+    e.preventDefault();
+    body.classList.remove('drag-over');
+    if (!draggingTicket) return;
+    const rect = body.getBoundingClientRect();
+    // getBoundingClientRect уже учитывает scroll — просто viewport Y - top
+    const y = e.clientY - rect.top;
+    createGhostBlock(body, y, day.date, draggingTicket);
+    draggingTicket = null;
+  });
 
   (day.schedule || []).forEach(item => {
     const startMin = timeToMin(item.start);
@@ -470,13 +506,122 @@ function toggleJira() {
 
 function renderJiraTickets(tickets) {
   const list = document.getElementById('jira-list');
-  if (!tickets.length) { list.innerHTML = '<div style="padding:12px;color:#6B7280;font-size:12px">Keine Tickets gefunden</div>'; return; }
-  list.innerHTML = tickets.map(t => `
-    <div class="jira-ticket" onclick="insertTicketToTodo('${t.key}', '${t.summary.replace(/'/g,"\\'")}', '${t.status}')">
+  if (!tickets.length) {
+    list.innerHTML = '<div style="padding:12px;color:#6B7280;font-size:12px">Keine Tickets gefunden</div>';
+    return;
+  }
+  list.innerHTML = '<div style="padding:6px 8px 4px;font-size:10px;color:#9CA3AF">↔ Tickets in Timeline ziehen oder klicken</div>';
+  tickets.forEach(t => {
+    const el = document.createElement('div');
+    el.className = 'jira-ticket';
+    el.draggable = true;
+    el.innerHTML = `
       <div class="jira-key">${t.key}</div>
       <div class="jira-summary">${t.summary}</div>
-      <div class="jira-status">${t.status} · ${t.priority}</div>
-    </div>`).join('');
+      <div class="jira-status">${t.status}${t.priority ? ' · ' + t.priority : ''}</div>`;
+    el.addEventListener('dragstart', e => {
+      draggingTicket = { key: t.key, summary: t.summary };
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData('text/plain', t.key);
+      el.classList.add('dragging');
+    });
+    el.addEventListener('dragend', () => {
+      el.classList.remove('dragging');
+    });
+    el.addEventListener('click', () => insertTicketToTodo(t.key, t.summary, t.status));
+    list.appendChild(el);
+  });
+}
+
+// ── Ghost block (dropped Jira ticket) ──────────────────────────────────────────
+function minToTime(min) {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+}
+
+function createGhostBlock(body, dropY, dateStr, ticket) {
+  // Удаляем предыдущий ghost в этой колонке
+  body.querySelectorAll('.ghost-block').forEach(g => g.remove());
+
+  const DEFAULT_DUR = 60;  // 1 час по умолчанию
+  // Вычисляем время из Y-позиции, snap to 15 min
+  const rawMin = DAY_START + (dropY / PX_PER_HOUR) * 60;
+  let startMin = Math.round(rawMin / 15) * 15;
+  startMin = Math.min(Math.max(startMin, DAY_START), DAY_END - DEFAULT_DUR);
+  let endMin = startMin + DEFAULT_DUR;
+
+  const ghost = document.createElement('div');
+  ghost.className = 'ghost-block';
+
+  function updateGhost() {
+    const top = ((startMin - DAY_START) / 60) * PX_PER_HOUR;
+    const height = Math.max(((endMin - startMin) / 60) * PX_PER_HOUR, 24);
+    ghost.style.top = top + 'px';
+    ghost.style.height = height + 'px';
+    ghost.querySelector('.ghost-time').textContent = `${minToTime(startMin)}–${minToTime(endMin)}`;
+  }
+
+  ghost.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:4px">
+      <div>
+        <div style="font-size:9px;color:#4F46E5;font-weight:700">${ticket.key}</div>
+        <div style="font-size:9px;color:#1F2937;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:120px">${ticket.summary}</div>
+        <div class="ghost-time" style="font-size:9px;color:#6366F1;font-weight:500"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:2px;flex-shrink:0">
+        <button class="ghost-save" style="padding:1px 6px;font-size:9px;background:#4F46E5;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit">✓</button>
+        <button class="ghost-cancel" style="padding:1px 6px;font-size:9px;background:#F3F4F6;color:#374151;border:1px solid #E5E7EB;border-radius:3px;cursor:pointer;font-family:inherit">✕</button>
+      </div>
+    </div>
+    <div class="ghost-resize-handle" title="Ziehen um Dauer ändern"></div>`;
+
+  updateGhost();
+
+  // Resize (нижний край)
+  ghost.querySelector('.ghost-resize-handle').addEventListener('mousedown', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startY = e.clientY;
+    const baseEnd = endMin;
+    const onMove = ev => {
+      const deltaMin = Math.round(((ev.clientY - startY) / PX_PER_HOUR) * 60 / 15) * 15;
+      endMin = Math.max(startMin + 15, Math.min(DAY_END, baseEnd + deltaMin));
+      updateGhost();
+    };
+    const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+
+  // Сохранить → /api/task
+  ghost.querySelector('.ghost-save').addEventListener('click', async () => {
+    const durMin = endMin - startMin;
+    const durH = durMin % 60 === 0 ? `${durMin / 60}h` : `${Math.floor(durMin/60)}h${durMin%60}m`;
+    const cmd = `${ticket.key} ${ticket.summary} ${durH} ${dateStr} ${minToTime(startMin)}`;
+    ghost.remove();
+    setStatus('⟳ Ticket einfügen…', 'info');
+    const current = document.getElementById('editor').value;
+    try {
+      const r = await fetch(API + '/api/task', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ command: cmd, schedule: current }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || 'Fehler');
+      document.getElementById('editor').value = data.content;
+      unsaved = false;
+      setStatus('✓ Ticket eingefügt', 'ok');
+      triggerParse(data.content);
+    } catch (e) {
+      setStatus('⚠ Ticket: ' + e.message, 'err');
+    }
+  });
+
+  // Отмена
+  ghost.querySelector('.ghost-cancel').addEventListener('click', () => ghost.remove());
+
+  body.appendChild(ghost);
 }
 
 function insertTicketToTodo(key, summary, status) {
