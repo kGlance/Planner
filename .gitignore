@@ -4,3 +4,4 @@ __pycache__/
 *.pyo
 schedule.md
 files.zip
+timeline_cache.json

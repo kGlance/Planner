@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>📅 MD Schedule</title>
+<title>📅 My Schedule</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500;600&display=swap');
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -58,9 +58,9 @@
   .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
 
   #timeline-panel { display: flex; overflow: hidden; flex-shrink: 0; }
-  #time-axis { width: 44px; flex-shrink: 0; border-right: 1px solid #E5E7EB; background: #FAFAFA; padding-top: 69px; }
+  #time-axis { width: 44px; flex-shrink: 0; border-right: 1px solid #E5E7EB; background: #FAFAFA; padding-top: 69px; overflow-y: hidden; }
   .hour-cell { display: flex; align-items: flex-start; padding: 3px 0 0 6px; font-size: 10px; color: #9CA3AF; }
-  #days-scroll { display: flex; overflow-x: auto; overflow-y: hidden; flex: 1; }
+  #days-scroll { display: flex; overflow-x: auto; overflow-y: auto; flex: 1; min-height: 0; align-items: flex-start; }
 
   .day-col { width: 200px; flex-shrink: 0; border-right: 1px solid #E5E7EB; display: flex; flex-direction: column; }
   .day-header { padding: 10px 12px 8px; border-bottom: 1px solid #E5E7EB; background: #FAFAFA; }
@@ -174,8 +174,8 @@ const COLORS = {
 };
 
 const PX_PER_HOUR = 64;
-const DAY_START = 8 * 60;
-const DAY_END = 19 * 60;
+const DAY_START = 9 * 60;
+const DAY_END = 18 * 60;
 const TOTAL_H = DAY_END - DAY_START;
 
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -294,18 +294,40 @@ async function parseWithLLM(text) {
   return parsed;
 }
 
+async function planAndParse(text) {
+  // Шаг 1: планирование + запись файла
+  setStatus('⟳ Plan…', 'info');
+  let planned = text;
+  try {
+    const r = await fetch(API + '/api/plan', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ content: text })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    planned = data.content;
+    document.getElementById('editor').value = planned;
+    unsaved = false;
+  } catch (e) {
+    setStatus('⚠ Plan: ' + e.message, 'err');
+    return;
+  }
+
+  // Шаг 2: парсинг в JSON → timeline
+  setStatus('⟳ Parse…', 'info');
+  try {
+    parsedData = await parseWithLLM(planned);
+    renderTimeline();
+    setStatus('✓ ok', 'ok');
+    fetch(API + '/api/cache', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ data: parsedData }) });
+  } catch (e) {
+    setStatus('⚠ Parse: ' + e.message, 'err');
+  }
+}
+
 function triggerParse(text) {
   clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(async () => {
-    setStatus('⟳ Parse…', 'info');
-    try {
-      parsedData = await parseWithLLM(text);
-      renderTimeline();
-      setStatus(unsaved ? '● ungespeichert' : '✓ ok', unsaved ? 'warn' : 'ok');
-    } catch (e) {
-      setStatus('⚠ Parse: ' + e.message, 'err');
-    }
-  }, 1500);
+  debounceTimer = setTimeout(() => planAndParse(text), 60000);
 }
 
 // ── Timeline render ────────────────────────────────────────────────────────────
@@ -452,6 +474,10 @@ document.getElementById('divider').addEventListener('mousedown', e => {
 
 window.addEventListener('resize', applyTopHeight);
 
+document.getElementById('days-scroll').addEventListener('scroll', e => {
+  document.getElementById('time-axis').scrollTop = e.target.scrollTop;
+});
+
 // ── Editor events ──────────────────────────────────────────────────────────────
 document.getElementById('editor').addEventListener('input', e => {
   unsaved = true;
@@ -500,17 +526,28 @@ document.getElementById('btn-save').onclick = saveSchedule;
 document.getElementById('btn-outlook').onclick = outlookSync;
 document.getElementById('btn-jira').onclick = toggleJira;
 document.getElementById('btn-enrich').onclick = enrich;
-document.getElementById('btn-reparse').onclick = () => triggerParse(document.getElementById('editor').value);
+document.getElementById('btn-reparse').onclick = () => planAndParse(document.getElementById('editor').value);
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 buildTimeAxis();
 applyTopHeight();
 
 async function startup() {
-  // 1. Читаем файл — без парсинга, просто показываем в редакторе
+  // 1. Сразу рисуем кэш — без ожидания LLM
+  try {
+    const cr = await fetch(API + '/api/cache');
+    const cd = await cr.json();
+    if (cd.ok && cd.data?.days?.length) {
+      parsedData = cd.data;
+      renderTimeline();
+      setStatus('⟳ Aktualisiere…', 'info');
+    }
+  } catch (_) {}
+
+  // 2. Читаем файл в редактор
   const initial = await loadSchedule(false);
-  // 2. Синхронизируем календарь
-  setStatus('⟳ Outlook sync…', 'info');
+
+  // 3. Outlook sync
   let finalContent = initial;
   try {
     const r = await fetch(API + '/api/sync/outlook', { method: 'POST' });
@@ -518,14 +555,14 @@ async function startup() {
     if (!r.ok) throw new Error(data.detail || 'Fehler');
     document.getElementById('editor').value = data.content;
     unsaved = false;
-    setStatus('✓ ' + data.summary, 'ok');
     finalContent = data.content;
   } catch (e) {
     setStatus('📄 Outlook nicht verfügbar: ' + e.message, 'warn');
   }
-  // 3. Парсим ровно один раз — после синка (или из файла если синк упал)
+
+  // 4. Планируем + парсим (без дебаунса — сразу при старте)
   clearTimeout(debounceTimer);
-  if (finalContent) triggerParse(finalContent);
+  if (finalContent) planAndParse(finalContent);
 }
 
 startup();

@@ -3,8 +3,12 @@ server.py — главный FastAPI сервер планировщика
 Запуск: python server.py
 """
 import os
+import sys
 import socket
 import uvicorn
+
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -18,6 +22,7 @@ app = FastAPI(title="Planner API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 SCHEDULE_FILE = Path(os.getenv("SCHEDULE_FILE", "schedule.md"))
+CACHE_FILE = SCHEDULE_FILE.parent / "timeline_cache.json"
 
 
 def find_free_port(start: int = 8100) -> int:
@@ -63,64 +68,143 @@ def write_schedule(body: ScheduleBody):
     return {"ok": True, "path": str(SCHEDULE_FILE)}
 
 
-# ── Parse через сервер (чтобы браузер не делал запрос к Anthropic напрямую) ────
+@app.get("/api/cache")
+def read_cache():
+    if not CACHE_FILE.exists():
+        return {"ok": False, "data": None}
+    import json
+    try:
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        return {"ok": True, "data": data}
+    except Exception:
+        return {"ok": False, "data": None}
+
+
+class CacheBody(BaseModel):
+    data: dict
+
+@app.post("/api/cache")
+def write_cache(body: CacheBody):
+    import json
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CACHE_FILE.write_text(json.dumps(body.data, ensure_ascii=False), encoding="utf-8")
+    return {"ok": True}
+
+
+# ── Шаг 1: планирование — LLM переписывает schedule.md ────────────────────────
 
 class ParseBody(BaseModel):
     content: str
+
+@app.post("/api/plan")
+def plan_schedule(body: ParseBody):
+    from openai import OpenAI
+    import time
+
+    api_key = os.getenv("ABACUS_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "ABACUS_API_KEY не задан в .env")
+
+    system_prompt = """You are a work-day schedule planner. Your job is to take a schedule.md file and return the COMPLETE updated schedule.md with all duration-only tasks placed into concrete time slots.
+
+## Output format
+Return ONLY the raw updated schedule.md content — no markdown fences, no explanation, no JSON.
+Preserve all existing structure exactly: day separators (---), section headers (## Meetings, ## Schedule, ## Todo), meeting lines, todo items, done markers.
+
+## Duration syntax — convert to fixed times
+Items in ## Schedule may specify duration instead of a time range. Recognize these patterns (case-insensitive, German/English):
+- "2 Stunde" / "2 Stunden" / "2h" → 120 min
+- "30 Minuten" / "30 Min" / "30m" → 30 min
+- "1,5 Stunde" / "1.5h" → 90 min
+Convert each duration-only item to "Item HH:MM-HH:MM" format. Items that already have HH:MM-HH:MM must not be changed.
+
+## Scheduling rules (applied independently for EVERY day)
+1. First, lay out all fixed-time items (HH:MM-HH:MM or explicit start time).
+2. Fixed daily rule: if no Pause/Mittagspause is listed for a day, automatically insert "- Mittagspause 12:00-12:30" into ## Schedule.
+3. For duration-only tasks: schedule sequentially into free gaps starting from 09:00, skipping meetings and fixed items. Never overlap. Never schedule past 17:30. Skip Saturday and Sunday entirely.
+3a. Daily capacity cap: total scheduled time per day (meetings + pauses + fokus) must not exceed 7.5 hours (450 minutes). If placing a task would exceed the cap, place only what fits; carry the remainder to the next working day.
+4. If a task is longer than the largest free gap, split it:
+   - remaining = total duration
+   - For each free gap: part = min(remaining, gap). Place "Task (1/N) HH:MM-HH:MM". remaining -= part. Stop when 0.
+   - Sum of all parts MUST equal original duration exactly.
+5. If remaining > 0 after all gaps on current day: carry to next working day as a duration-only line at the top of ## Schedule. Continue until remaining == 0. If no future day exists, add to todo with "(Rest — nächste Woche einplanen)".
+
+## Conflict resolution
+- Meetings (prefix "Meeting:") are immovable.
+- Pause items are immovable.
+- Fokus task overlapping meeting/pause: shift fokus to start after the blocking item. Keep shifting if needed. If it can't fit before 17:30, apply split/carry rules.
+- Two meetings overlapping: keep both, add a comment line "> ⚠ Konflikt" after the second one.
+
+Return ONLY the complete updated schedule.md text."""
+
+    model = os.getenv("ABACUS_MODEL", "gpt-5")
+    print(f"[Plan] → {model} | {len(body.content)} символов")
+    t0 = time.time()
+
+    try:
+        client = OpenAI(
+            base_url=os.getenv("ABACUS_BASE_URL", "https://routellm.abacus.ai/v1"),
+            api_key=api_key,
+        )
+        response = client.chat.completions.create(
+            model=model,
+            max_tokens=4000,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": body.content},
+            ],
+        )
+        elapsed = time.time() - t0
+        raw = response.choices[0].message.content.strip()
+        print(f"[Plan] ✓ ответ за {elapsed:.1f}с | {len(raw)} символов")
+        # Убираем случайные ```markdown фенсы
+        import re
+        raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
+        # Сохраняем файл
+        SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cleaned = clean_schedule(raw)
+        SCHEDULE_FILE.write_text(cleaned, encoding="utf-8")
+        print(f"[Plan] ✓ файл сохранён: {SCHEDULE_FILE}")
+        return {"ok": True, "content": cleaned}
+    except Exception as e:
+        print(f"[Plan] ✗ ошибка ({time.time()-t0:.1f}с): {e}")
+        raise HTTPException(500, str(e))
+
+
+# ── Шаг 2: парсинг в JSON для timeline ────────────────────────────────────────
 
 @app.post("/api/parse")
 def parse_schedule(body: ParseBody):
     from openai import OpenAI
     import json
     import re
+    import time
 
     api_key = os.getenv("ABACUS_API_KEY")
     if not api_key:
         raise HTTPException(500, "ABACUS_API_KEY не задан в .env")
 
-    system_prompt = """You are a work-day schedule planner and parser. Your job is to parse a schedule.md file and return a structured JSON with all tasks placed in non-overlapping time slots.
+    system_prompt = """You are a schedule parser. The schedule.md you receive has already been planned — all items have explicit HH:MM-HH:MM time ranges. Your only job is to parse it into JSON for the timeline UI.
 
 ## Output format
 Return ONLY a raw JSON object — no markdown fences, no explanation:
-{"days":[{"date":"YYYY-MM-DD","meetings":[{"time":"HH:MM","title":"string"}],"schedule":[{"title":"string","start":"HH:MM","end":"HH:MM","category":"meeting|pause|fokus"}],"todo":[{"text":"string","done":false}]}]}
+{"days":[{"date":"YYYY-MM-DD","meetings":[{"time":"HH:MM","title":"string"}],"schedule":[{"title":"string","start":"HH:MM","end":"HH:MM","category":"meeting|pause|fokus","conflict":false}],"todo":[{"text":"string","done":false}]}]}
 
-## Duration syntax
-Items in ## Schedule may specify duration instead of a time range. Recognize these patterns (case-insensitive, German/English):
-- "2 Stunde" / "2 Stunden" / "2h" → 120 min
-- "30 Minuten" / "30 Min" / "30m" → 30 min
-- "1,5 Stunde" / "1.5h" → 90 min
-- "2,5 Stunde" → 150 min
-When duration is given without a start time, place the task in the next available free slot (see scheduling rules below).
-When duration is given WITH a start time (e.g. "Fokus Arbeit 09:30 2 Stunden"), use that start and compute end = start + duration.
-
-## Scheduling rules (applied independently for EVERY day in the file)
-1. First, lay out all fixed-time items (items with explicit HH:MM-HH:MM or explicit start time).
-2. Fixed daily rule: if no Pause/Mittagspause is listed for a day, automatically insert "Mittagspause" 12:00-12:30 (category: pause).
-3. For tasks that have only a duration (no start time), schedule them sequentially into free gaps, starting from 08:30, skipping over all meetings and fixed items. Never overlap. Never schedule past 18:30. Never schedule on Saturday or Sunday — skip weekend days entirely when looking for free slots.
-4. If a non-meeting task is longer than the largest available free slot, split it across multiple free slots using this exact algorithm:
-   - remaining = total task duration in minutes
-   - For each free gap (in chronological order): part_duration = min(remaining, gap_size). Place a part entry with that exact duration. remaining -= part_duration. Stop when remaining == 0.
-   - Name parts with a suffix only if there are multiple: "Task (1/3)", "Task (2/3)", "Task (3/3)". The total minutes across ALL parts MUST equal the original duration exactly. Never lose minutes.
-5. If after filling all gaps on the current day remaining > 0, carry the remainder over to the next available working day (skip Saturday/Sunday) — add it as a duration-only entry at the top of that day's Schedule. Continue until remaining == 0. If no future day exists in the file, append the remainder to today's todo list with a note "(Rest — nächste Woche einplanen)".
-
-## Conflict resolution (applied to EVERY day)
-After placing all fixed-time items, check for overlaps. Resolve them by priority:
-- Meetings (category "meeting") are immovable — never shift a meeting.
-- Pause items are immovable.
-- If a fokus task overlaps with a meeting or pause, move the fokus task to start immediately after the blocking item ends. If it then overlaps the next item, keep shifting until it fits. If it can't fit before 18:30, apply the split/carry-over rules from rule 4-5.
-- If two meetings overlap each other (both immovable), keep both in place and add "conflict": true to both — this is a calendar conflict that cannot be auto-resolved.
+## Parsing rules
+- Parse every line in ## Schedule as {"title", "start", "end", "category"}.
+- "conflict": true only if there is a "> ⚠ Konflikt" comment after an item.
+- Parse ## Meetings lines (format "HH:MM Title") into the meetings array.
+- Parse ## Todo lines: "- [ ] text" → done:false, "- [x] text" → done:true.
 
 ## Category rules
-- "meeting": title starts with "Meeting:" OR matches an entry in ## Meetings section by title
+- "meeting": title starts with "Meeting:" OR title matches an entry in ## Meetings
 - "pause": title contains (case-insensitive): pause, mittagspause, kaffeepause, frei luft, freiluft, break, lunch
-- "fokus": everything else — the user does not use "Fokus Arbeit" prefixes, any non-meeting non-pause task is fokus
+- "fokus": everything else
 
 Return ONLY the raw JSON object."""
 
-    import time
     model = os.getenv("ABACUS_MODEL", "gpt-5")
-    chars = len(body.content)
-    print(f"[Parse] → {model} | {chars} символов входного текста")
+    print(f"[Parse] → {model} | {len(body.content)} символов")
     t0 = time.time()
 
     try:
@@ -224,7 +308,7 @@ def add_task(body: TaskBody):
         f"- Day keywords: 'heute'/'today' -> {today}; 'morgen'/'tomorrow' -> next day; weekday names -> nearest upcoming weekday.\n"
         "- Never place tasks on Saturday or Sunday -- move to next Monday if needed.\n"
         "- Find the ## Schedule section of the target day and append the new line at the end of that section, e.g.: '- Aufgabe xyz 30 Minuten'\n"
-        "- Before inserting, estimate free time on the target day: sum up durations of existing Schedule entries and subtract from ~8h workday (08:30-18:30). If the task duration exceeds remaining free time, move to the next working day (skip Saturday/Sunday). Keep trying until you find a day with enough room or reach 14 days ahead -- then insert anyway on the last tried day.\n"
+        "- Before inserting, estimate free time on the target day: sum up durations of existing Schedule entries and subtract from ~7.5h workday (09:00-17:30). If the task duration exceeds remaining free time, move to the next working day (skip Saturday/Sunday). Keep trying until you find a day with enough room or reach 14 days ahead -- then insert anyway on the last tried day.\n"
         "- If the target day block does not exist yet, append a new block at the end of the file:\n"
         "  # YYYY-MM-DD\n\n  ## Meetings\n  _(keine)_\n\n  ## Schedule\n  - TaskName Duration\n\n  ## Todo\n  - [ ] \n"
         "\n"
@@ -271,6 +355,7 @@ def ui():
 # -- Start ---------------------------------------------------------------------
 
 if __name__ == "__main__":
+    os.environ.setdefault("PYTHONUTF8", "1")
     port = find_free_port(int(os.getenv("SERVER_PORT_START", 8100)))
     print(f"\n  Planner -> http://localhost:{port}\n")
     uvicorn.run("server:app", host="127.0.0.1", port=port, reload=True)
