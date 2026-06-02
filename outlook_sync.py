@@ -150,7 +150,21 @@ def build_day_block(date_str: str, meetings: list[dict], existing: str | None = 
 
     # Строим Meetings секцию — мержим Outlook + существующие вручную
     merged_meetings = list(existing_meetings_lines)
+
+    # Специальная обработка для "Aida Abwesenheit" — показываем только одно событие в 09:00
+    has_aida = any("Aida Abwesenheit" in m["title"] or "abwesenheit" in m["title"].lower() for m in meetings)
+    aida_already_in_meetings = any("Aida Abwesenheit" in l and "09:00" in l for l in merged_meetings)
+
+    if has_aida and not aida_already_in_meetings:
+        # Удаляем любые старые Aida Abwesenheit
+        merged_meetings = [l for l in merged_meetings if "Aida Abwesenheit" not in l and "abwesenheit" not in l.lower()]
+        # Добавляем одно единое событие в 09:00
+        merged_meetings.append("- 09:00 Aida Abwesenheit")
+
+    # Добавляем остальные встречи (не Aida Abwesenheit)
     for m in meetings:
+        if "Aida Abwesenheit" in m["title"] or "abwesenheit" in m["title"].lower():
+            continue  # Skip, already handled above
         line = f"- {m['time']} {m['title']}"
         # Добавляем только если такой же (время + название) ещё нет
         meeting_sig = f"{m['time']} {m['title']}"
@@ -165,11 +179,24 @@ def build_day_block(date_str: str, meetings: list[dict], existing: str | None = 
     # Строим Schedule секцию — добавляем митинги из Outlook если их ещё нет
     # Митинги из календаря всегда с префиксом "Meeting:"
     merged_schedule = list(existing_schedule_lines)
+
+    # Специальная обработка для "Aida Abwesenheit" — объединяем в одно событие 09:00-17:00
+    has_aida = any("Aida Abwesenheit" in m["title"] or "abwesenheit" in m["title"].lower() for m in meetings)
+    aida_already_in_schedule = any("Aida Abwesenheit" in l and "09:00-17:00" in l for l in merged_schedule)
+
+    if has_aida and not aida_already_in_schedule:
+        # Удаляем любые старые Aida Abwesenheit из Schedule
+        merged_schedule = [l for l in merged_schedule if "Aida Abwesenheit" not in l and "abwesenheit" not in l.lower()]
+        # Добавляем одно единое событие
+        merged_schedule.append("- Meeting: Aida Abwesenheit 09:00-17:00")
+
+    # Добавляем остальные митинги (не Aida Abwesenheit)
     for m in meetings:
+        if "Aida Abwesenheit" in m["title"] or "abwesenheit" in m["title"].lower():
+            continue  # Skip, already handled above
         title = m["title"] if m["title"].startswith("Meeting:") else f"Meeting: {m['title']}"
         line = f"- {title} {m['time']}-{m['end']}"
         # Проверяем по уникальной сигнатуре (время + название)
-        schedule_sig = f"{m['time']}-{m['end']} {m['title']}"
         if not any(m["title"] in l and m["time"] in l and m["end"] in l for l in merged_schedule):
             merged_schedule.append(line)
     # Сортируем по времени начала
