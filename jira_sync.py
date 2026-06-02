@@ -1,59 +1,93 @@
 """
-jira_sync.py — читает тикеты из Jira Server/DC
+jira_sync.py — читает тикеты из Jira Cloud через GraphQL API
 """
 import os
+import json
 import requests
+from requests.auth import HTTPBasicAuth
 from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_URL = os.getenv("JIRA_BASE_URL", "https://jira.your-company.com").rstrip("/")
-USERNAME = os.getenv("JIRA_USERNAME", "")
+HOST = os.getenv("JIRA_BASE_URL", "")
+USER_EMAIL = os.getenv("JIRA_USERNAME", "")
 API_TOKEN = os.getenv("JIRA_API_TOKEN", "")
-PROJECT = os.getenv("JIRA_PROJECT_KEY", "")
-ASSIGNEE = os.getenv("JIRA_ASSIGNEE", USERNAME)
+CLOUD_ID = os.getenv("JIRA_CLOUD_ID", "")
+
+AUTH = HTTPBasicAuth(USER_EMAIL, API_TOKEN)
+HEADERS = {
+    "Content-Type": "application/json",
+    "X-ExperimentalApi": "Atlassian-GraphQL"
+}
 
 
 def fetch_my_tickets(max_results: int = 30) -> list[dict]:
     """
-    Возвращает активные тикеты назначенные на тебя.
-    Статусы: In Progress, In Review, Code Review, To Do
+    Возвращает активные тикеты назначенные на тебя через GraphQL API.
     """
-    # Получаем accountId текущего пользователя через /myself
-    myself = requests.get(
-        f"{BASE_URL}/rest/api/2/myself",
-        auth=(USERNAME, API_TOKEN),
-        timeout=10,
-    )
-    myself.raise_for_status()
-    account_id = myself.json().get("accountId") or myself.json().get("name") or ASSIGNEE
+    url = f"https://{HOST}/gateway/api/graphql"
 
-    jql = (
-        f'project = "{PROJECT}" '
-        f'AND assignee = "{account_id}" '
-        f'AND status in ("In Progress", "In Review", "Code Review", "To Do") '
-        f'ORDER BY updated DESC'
-    )
+    # Твой account ID из Jira
+    my_account_id = os.getenv("JIRA_ACCOUNT_ID", "")
+    if not my_account_id:
+        print("[Jira] ⚠ JIRA_ACCOUNT_ID не задан в .env")
+        return []
 
-    response = requests.get(
-        f"{BASE_URL}/rest/api/2/search",
-        params={"jql": jql, "maxResults": max_results, "fields": "summary,status,priority,issuetype,updated"},
-        auth=(USERNAME, API_TOKEN),
-        timeout=10,
-    )
-    response.raise_for_status()
+    jql_query = f"assignee = '{my_account_id}' ORDER BY updated DESC"
+
+    graphql_query = """
+    query getMyIssues($cloudId: ID!, $jql: String!) {
+      jira {
+        issueSearch(cloudId: $cloudId, issueSearchInput: { jql: $jql }, first: 50) @optIn(to: "JiraSpreadsheetComponent-M1") {
+          edges {
+            node {
+              key
+              summary
+              status {
+                name
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    payload = {
+        "query": graphql_query,
+        "variables": {
+            "cloudId": CLOUD_ID,
+            "jql": jql_query
+        }
+    }
+
+    print(f"[Jira] GraphQL запрос к {url}")
+    response = requests.post(url, json=payload, auth=AUTH, headers=HEADERS, timeout=10)
+
+    if response.status_code != 200:
+        print(f"[Jira] Error {response.status_code}: {response.text[:500]}")
+        return []
+
     data = response.json()
 
+    # Проверка на ошибки GraphQL
+    if "errors" in data:
+        print("[Jira] GraphQL ошибки:")
+        print(json.dumps(data["errors"], indent=2, ensure_ascii=False))
+        return []
+
     tickets = []
-    for issue in data.get("issues", []):
-        fields = issue.get("fields", {})
+    issues = data.get("data", {}).get("jira", {}).get("issueSearch", {}).get("edges", [])
+
+    for edge in issues:
+        node = edge.get("node", {})
         tickets.append({
-            "key": issue["key"],
-            "summary": fields.get("summary", ""),
-            "status": fields.get("status", {}).get("name", ""),
-            "priority": fields.get("priority", {}).get("name", ""),
-            "type": fields.get("issuetype", {}).get("name", ""),
-            "url": f"{BASE_URL}/browse/{issue['key']}",
+            "key": node.get("key", ""),
+            "summary": node.get("summary", ""),
+            "status": node.get("status", {}).get("name", ""),
+            "priority": node.get("priority", {}).get("name", ""),
+            "type": node.get("issuetype", {}).get("name", ""),
+            "url": f"https://{HOST}/browse/{node.get('key', '')}",
         })
 
     return tickets
