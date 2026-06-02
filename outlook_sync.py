@@ -87,6 +87,14 @@ def get_outlook_meetings(days_ahead: int = DAYS_AHEAD) -> dict[str, list[dict]]:
                 pass  # если сравнение не работает — пропускаем проверку
 
             day_key = dt_start.strftime("%Y-%m-%d")
+
+            # Обрезаем "Aida Abwesenheit" по границам рабочего дня (09:00-17:00)
+            if "Aida Abwesenheit" in title or "abwesend" in title.lower():
+                if dt_start.hour == 0 and dt_start.minute == 0:
+                    dt_start = dt_start.replace(hour=9, minute=0)
+                if dt_end.hour == 23 and dt_end.minute == 59:
+                    dt_end = dt_end.replace(hour=17, minute=0)
+
             duration = int((dt_end - dt_start).total_seconds() / 60)
 
             print(f"[Outlook]   + {day_key} {dt_start.strftime('%H:%M')}-{dt_end.strftime('%H:%M')} ({duration}min) | {title}")

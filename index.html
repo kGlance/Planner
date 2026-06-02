@@ -65,8 +65,21 @@
   .day-col { width: 200px; flex-shrink: 0; border-right: 1px solid #E5E7EB; display: flex; flex-direction: column; }
   .day-header { padding: 10px 12px 8px; border-bottom: 1px solid #E5E7EB; background: #FAFAFA; position: sticky; top: 0; z-index: 10; }
   .day-title { font-weight: 600; font-size: 13px; color: #111827; margin-bottom: 6px; }
-  .day-stats { display: flex; gap: 5px; flex-wrap: wrap; }
-  .stat-badge { font-size: 10px; border-radius: 4px; padding: 1px 5px; border: 1px solid; }
+  .day-stats { display: flex; flex-direction: column; gap: 3px; }
+  .stat-badge { font-size: 10px; border-radius: 4px; padding: 1px 5px; border: 1px solid; display: none; }
+  .stat-bar {
+    display: flex; height: 12px; border-radius: 3px; overflow: hidden;
+    border: 1px solid #D1D5DB; background: #F3F4F6;
+  }
+  .stat-bar-segment { height: 100%; transition: flex 0.2s; }
+  .stat-bar-meeting { background: #DBEAFE; border-right: 1px solid rgba(255,255,255,0.3); }
+  .stat-bar-pause { background: #D1FAE5; border-right: 1px solid rgba(255,255,255,0.3); }
+  .stat-bar-fokus { background: #FEF3C7; }
+  .stat-label { font-size: 10px; color: #6B7280; }
+  .stat-label-row { display: flex; gap: 3px; align-items: center; }
+  .stat-label-dot { width: 6px; height: 6px; border-radius: 1px; flex-shrink: 0; }
+  .stat-label-text { font-size: 9px; }
+
   .day-body {
     position: relative; overflow: hidden; background: #fff;
     padding-bottom: 70px;
@@ -371,15 +384,28 @@ function buildDayCol(day) {
   });
 
   const label = new Date(day.date + 'T12:00:00').toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
-  const badgeColors = { meeting: ['#DBEAFE','#3B82F6','#1E40AF'], pause: ['#D1FAE5','#10B981','#065F46'], fokus: ['#FEF3C7','#F59E0B','#92400E'] };
-  const statBadges = Object.entries(stats).filter(([,m]) => m > 0).map(([cat, min]) => {
-    const [bg, br, tx] = badgeColors[cat];
-    return `<span class="stat-badge" style="background:${bg};border-color:${br};color:${tx}">${cat[0].toUpperCase()}:${formatH(min)}</span>`;
-  }).join('');
+  // Прогресс-бар вместо текстовых бейджей
+  const total = stats.meeting + stats.pause + stats.fokus;
+  const pctMeeting = total > 0 ? (stats.meeting / total) * 100 : 0;
+  const pctPause = total > 0 ? (stats.pause / total) * 100 : 0;
+  const pctFokus = total > 0 ? (stats.fokus / total) * 100 : 0;
+
+  const statBar = `
+    <div class="stat-bar">
+      ${pctMeeting > 0 ? `<div class="stat-bar-segment stat-bar-meeting" style="flex: ${pctMeeting}"></div>` : ''}
+      ${pctPause > 0 ? `<div class="stat-bar-segment stat-bar-pause" style="flex: ${pctPause}"></div>` : ''}
+      ${pctFokus > 0 ? `<div class="stat-bar-segment stat-bar-fokus" style="flex: ${pctFokus}"></div>` : ''}
+    </div>
+    <div class="stat-label">
+      ${stats.meeting > 0 ? `<span style="color:#3B82F6">M:${formatH(stats.meeting)}</span> ` : ''}
+      ${stats.pause > 0 ? `<span style="color:#10B981">P:${formatH(stats.pause)}</span> ` : ''}
+      ${stats.fokus > 0 ? `<span style="color:#F59E0B">F:${formatH(stats.fokus)}</span>` : ''}
+    </div>
+  `;
 
   const header = document.createElement('div');
   header.className = 'day-header';
-  header.innerHTML = `<div class="day-title">${label}</div><div class="day-stats">${statBadges}</div>`;
+  header.innerHTML = `<div class="day-title">${label}</div><div class="day-stats">${statBar}</div>`;
   col.appendChild(header);
 
   const body = document.createElement('div');

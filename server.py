@@ -297,7 +297,7 @@ Return ONLY a raw JSON object — no markdown fences, no explanation:
 
 ## Category rules
 - "meeting": title starts with "Meeting:" OR title matches an entry in ## Meetings
-- "pause": title contains (case-insensitive): pause, mittagspause, kaffeepause, freie luft, freieluft, break, lunch, morgenroutine, kaffee, abwesend, shutdown
+- "pause": title contains (case-insensitive): pause, mittagspause, kaffeepause, freie luft, freieluft, break, lunch, morgenroutine, kaffee, abwesend, abwesenheit, shutdown
 - "fokus": everything else
 
 Return ONLY the raw JSON object."""
