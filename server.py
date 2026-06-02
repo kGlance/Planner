@@ -211,7 +211,12 @@ Convert each duration-only item to "Item HH:MM-HH:MM" format. Items that already
 
 ## Scheduling rules (applied independently for EVERY day)
 1. First, lay out all fixed-time items (HH:MM-HH:MM or explicit start time).
-2. Fixed daily rule: if no Pause/Mittagspause is listed for a day, automatically insert "- Mittagspause 12:00-12:30" into ## Schedule.
+2. Fixed daily rules: 
+2a.if no Pause/Mittagspause is listed in Schedule, automatically insert "- Mittagspause 12:00-12:30" into ## Schedule.
+2b. if no "Morgenkaffee & Planung" is listed in Schedule, automatically insert "- Morgenkaffee & Planung 09:00-09:25" into ## Schedule.
+2c. if no "Shutdown" is listed in Schedule, automatically insert "- Shutdown 16:45-17:00" into ## Schedule.
+2d. Try to find 30 minutes a day to take a break. Schedule this as "Freien Luft".
+2e. If "Abwesend ganzen Tag" in Schedule set the "- Abwesend 09:00-17:00" into ## Schedule and Skip Meetings.
 3. For duration-only tasks: schedule sequentially into free gaps starting from 09:00, skipping meetings and fixed items. Never overlap. Never schedule past 17:30. Skip Saturday and Sunday entirely. Never reschedule meetings!
 3a. Daily capacity cap: total scheduled time per day (meetings + pauses + fokus) must not exceed 7.5 hours (450 minutes). If placing a task would exceed the cap, place only what fits; carry the remainder to the next working day.
 4. If a task is longer than the largest free gap, split it:
@@ -222,7 +227,7 @@ Convert each duration-only item to "Item HH:MM-HH:MM" format. Items that already
 
 ## Category rules
 - "meeting": title starts with "Meeting:" OR matches an entry in ## Meetings section by title
-- "pause": title contains (case-insensitive): pause, mittagspause, kaffeepause, frei luft, freiluft, break, lunch, morgenroutine, kaffee
+- "pause": title contains (case-insensitive): pause, mittagspause, kaffeepause, freie luft, freieluft, break, lunch, morgenroutine, kaffee
 - "fokus": everything else
 
 Return ONLY the updated schedule window — preserve separators (---) exactly."""
@@ -292,7 +297,7 @@ Return ONLY a raw JSON object — no markdown fences, no explanation:
 
 ## Category rules
 - "meeting": title starts with "Meeting:" OR title matches an entry in ## Meetings
-- "pause": title contains (case-insensitive): pause, mittagspause, kaffeepause, frei luft, freiluft, break, lunch, morgenroutine, kaffee
+- "pause": title contains (case-insensitive): pause, mittagspause, kaffeepause, freie luft, freieluft, break, lunch, morgenroutine, kaffee, abwesend, shutdown
 - "fokus": everything else
 
 Return ONLY the raw JSON object."""
